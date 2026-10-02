@@ -384,6 +384,18 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "email privacy blur hide screenshot account",
   },
   {
+    id: "remote-control-claude",
+    section: "providers",
+    label: "Claude Code Remote Control",
+    keywords: "remote control phone web claude.ai bridge keep alive park",
+  },
+  {
+    id: "remote-control-codex",
+    section: "providers",
+    label: "Codex Remote Control",
+    keywords: "remote control phone web codex app bridge keep alive park",
+  },
+  {
     id: "claude-hooks",
     section: "providers",
     label: "Claude Code hooks",

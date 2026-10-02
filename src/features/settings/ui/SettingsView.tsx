@@ -233,6 +233,10 @@ import {
   useShowRemainingUsage,
 } from "../model/displayPrefs";
 import {
+  saveRemoteControl,
+  useRemoteControl,
+} from "../model/remoteControl";
+import {
   accountStatus,
   accountUsageKey,
   useProviderAccountUsage,
@@ -3078,6 +3082,8 @@ function ProvidersPage({
   const [choice, setChoice] = useState(loadLastModelChoice);
   const [defaultModels, setDefaultModels] = useState(loadDefaultModels);
   const [claudeHooks, setClaudeHooks] = useState(loadClaudeHooks);
+  const claudeRemoteControl = useRemoteControl("claude");
+  const codexRemoteControl = useRemoteControl("codex");
   const [scope, setScope] = useState<string>(GLOBAL_PROVIDER_SCOPE);
   const [hiddenGlobally, setHiddenGlobally] = useState(
     loadHiddenPickerProviders,
@@ -3235,6 +3241,34 @@ function ProvidersPage({
             />
           );
         })}
+      </Group>
+
+      <Group
+        title="Remote Control"
+        description="Reach a session from the agent's web and phone apps while MonoCode keeps it running. Sessions with Remote Control on stay alive after a reply instead of being parked; the change applies to sessions started afterwards."
+      >
+        <Row
+          id="remote-control-claude"
+          label="Claude Code"
+          description="Connect each Claude Code session to Remote Control so it shows up on claude.ai/code and in the Claude app. Needs the Claude Code login that Remote Control is enabled for."
+        >
+          <Toggle
+            label="Claude Code Remote Control"
+            on={claudeRemoteControl}
+            onChange={(next) => saveRemoteControl("claude", next)}
+          />
+        </Row>
+        <Row
+          id="remote-control-codex"
+          label="Codex"
+          description="Connect each Codex session to Remote Control so it shows up in the Codex app. A Mac holds one Codex remote connection; while another app has it, MonoCode keeps retrying."
+        >
+          <Toggle
+            label="Codex Remote Control"
+            on={codexRemoteControl}
+            onChange={(next) => saveRemoteControl("codex", next)}
+          />
+        </Row>
       </Group>
 
       <Group title="Advanced">

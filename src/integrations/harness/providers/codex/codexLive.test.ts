@@ -14,6 +14,13 @@ const saveGeneratedImage = vi.hoisted(() =>
 );
 const deleteGeneratedImages = vi.hoisted(() => vi.fn(async () => undefined));
 
+const remoteControlFlags = vi.hoisted(() => ({ claude: false, codex: false }));
+
+vi.mock("../../../../features/settings/model/remoteControl", () => ({
+  loadRemoteControl: (harness: "claude" | "codex") =>
+    remoteControlFlags[harness],
+}));
+
 vi.mock("../../core/child", () => ({
   resolveCodexBinary: async () => ({ path: "/fake/codex" }),
   spawnChild: async () => undefined,
@@ -2152,5 +2159,105 @@ describe("codex subagents", () => {
           event.text.includes("Child talking."),
       ),
     ).toBe(false);
+  });
+});
+
+describe("codex remote control", () => {
+  beforeEach(() => {
+    sent.length = 0;
+    onLine = undefined;
+    writeChild.mockClear();
+    remoteControlFlags.codex = true;
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    remoteControlFlags.codex = false;
+    await stopCodexSession("codex-rc");
+    __codexTestReset();
+  });
+
+  function enableRequests() {
+    return parse().filter((m) => m.method === "remoteControl/enable");
+  }
+
+  function statusTexts(events: HarnessEvent[]) {
+    return events
+      .filter((event) => event.type === "status")
+      .map((event) => (event as { text: string }).text);
+  }
+
+  it("enables Remote Control once the thread is open", async () => {
+    const { events, turn } = await startTurn("codex-rc");
+    await waitFor(() => enableRequests().length === 1, "remoteControl/enable");
+    const enable = enableRequests()[0];
+    expect(enable.params).toEqual({ ephemeral: true });
+    reply(enable.id as number, {});
+
+    notify("remoteControl/status/changed", { status: "connecting" });
+    notify("remoteControl/status/changed", { status: "connected" });
+    expect(statusTexts(events)).toEqual(["Remote Control on."]);
+
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  it("retries with backoff while another app holds the remote connection", async () => {
+    const { events, turn } = await startTurn("codex-rc");
+    await waitFor(() => enableRequests().length === 1, "remoteControl/enable");
+    const first = enableRequests()[0];
+
+    vi.useFakeTimers();
+    onLine!(
+      JSON.stringify({
+        id: first.id,
+        error: { code: -32000, message: "remote control already active" },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statusTexts(events)).toEqual([
+      "Remote Control could not start: remote control already active. Retrying.",
+    ]);
+
+    await vi.advanceTimersByTimeAsync(30_000 - 1);
+    expect(enableRequests()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(enableRequests()).toHaveLength(2);
+    // A second refusal is retried quietly, after the next delay.
+    onLine!(
+      JSON.stringify({
+        id: enableRequests()[1].id,
+        error: { code: -32000, message: "remote control already active" },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(enableRequests()).toHaveLength(3);
+    expect(statusTexts(events)).toHaveLength(1);
+    reply(enableRequests()[2].id as number, {});
+
+    notify("remoteControl/status/changed", { status: "connected" });
+    notify("remoteControl/status/changed", {
+      status: "errored",
+      message: "bridge closed",
+    });
+    expect(statusTexts(events).slice(1)).toEqual([
+      "Remote Control on.",
+      "Remote Control dropped: bridge closed. Retrying.",
+    ]);
+    // A dropped connection starts the backoff over from the first delay.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(enableRequests()).toHaveLength(4);
+
+    vi.useRealTimers();
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  it("leaves Remote Control alone while the setting is off", async () => {
+    remoteControlFlags.codex = false;
+    const { turn } = await startTurn("codex-rc");
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+    expect(enableRequests()).toHaveLength(0);
   });
 });

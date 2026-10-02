@@ -8,6 +8,10 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { GeneratedSessionTitle } from "../../../features/sessions/model/sessionTitle";
 import type { PrContent } from "../../../features/source-control/model/gitText";
 import { hasLiveCatalog } from "../../../features/sessions/model/models";
+import {
+  isRemoteControlHarness,
+  loadRemoteControl,
+} from "../../../features/settings/model/remoteControl";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import type { NativeCommandProvider } from "./nativeCommands";
 import type {
@@ -171,6 +175,9 @@ function cancelIdlePark(sessionId: string): void {
 
 function scheduleIdlePark(harness: HarnessId, sessionId: string): void {
   cancelIdlePark(sessionId);
+  // A Remote Control session is reachable from the phone only while its
+  // process runs; parking it would archive the session there.
+  if (isRemoteControlHarness(harness) && loadRemoteControl(harness)) return;
   idleParkTimers.set(
     sessionId,
     setTimeout(() => {

@@ -5,6 +5,7 @@ import {
   parseCodexRateLimits,
 } from "../../../../features/providers/model/rateLimits";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
+import { loadRemoteControl } from "../../../../features/settings/model/remoteControl";
 import { questionPromptTitle, type UserQuestionReply } from "../../../../features/sessions/model/userQuestion";
 import {
   killChild,
@@ -105,7 +106,20 @@ type Live = {
   rateLimits: Map<string, Record<string, unknown>>;
   /** The active turn failed on a spent usage limit. */
   usageLimited: boolean;
+  /** Remote Control bridge for this app-server; null when the setting is off. */
+  remoteControl: RemoteControlState | null;
 };
+
+type RemoteControlState = {
+  /** Last `remoteControl/status/changed` status: connecting, connected, errored, disabled. */
+  status: string | null;
+  /** Failed attempts since the last connection; picks the retry delay. */
+  failures: number;
+  retry: ReturnType<typeof setTimeout> | null;
+};
+
+/** A Mac has one Codex remote connection; while another app holds it, retry. */
+const REMOTE_CONTROL_RETRY_MS = [30_000, 60_000, 120_000, 300_000];
 
 function trackNotificationQueue(
   live: Live,
@@ -368,6 +382,7 @@ export async function stopCodexSession(sessionId: string): Promise<void> {
   if (live) {
     live.muteUpdates = true;
     live.turnGeneration += 1;
+    if (live.remoteControl?.retry) clearTimeout(live.remoteControl.retry);
     clearServerRequests(live);
     live.turnDone?.();
     live.turnDone = null;
@@ -620,6 +635,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       openAgentRows: new Map(),
       rateLimits: new Map(),
       usageLimited: false,
+      remoteControl: loadRemoteControl("codex")
+        ? { status: null, failures: 0, retry: null }
+        : null,
     };
     liveRef.current = live;
     liveByThread.set(input.sessionId, live);
@@ -633,11 +651,89 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       providerSessionId: threadId,
     });
     live.onEvent({ type: "session.started" });
+    void enableRemoteControl(live);
     return live;
   } catch (error) {
     rpc.close(error instanceof Error ? error : new Error(String(error)));
     await stopCodexSession(input.sessionId);
     throw error;
+  }
+}
+
+/**
+ * Connect this app-server to Remote Control when the setting is on. Codex
+ * reports progress through `remoteControl/status/changed`; a refused request
+ * (another app holds the Mac's one remote connection) is retried with backoff.
+ */
+async function enableRemoteControl(live: Live): Promise<void> {
+  const state = live.remoteControl;
+  if (!state) return;
+  state.retry = null;
+  if (live.rpc.isClosed || state.status === "connected") return;
+  try {
+    await live.rpc.request("remoteControl/enable", { ephemeral: true });
+  } catch (error) {
+    if (live.rpc.isClosed || !liveByThreadHas(live)) return;
+    // Say it once; the retries that follow stay quiet until something changes.
+    if (state.failures === 0) {
+      const message = error instanceof Error ? error.message : String(error);
+      live.onEvent({
+        type: "status",
+        text: `Remote Control could not start: ${message}. Retrying.`,
+      });
+    }
+    scheduleRemoteControlRetry(live);
+  }
+}
+
+function liveByThreadHas(live: Live): boolean {
+  for (const current of liveByThread.values()) if (current === live) return true;
+  return false;
+}
+
+function scheduleRemoteControlRetry(live: Live): void {
+  const state = live.remoteControl;
+  if (!state || state.retry) return;
+  const delay =
+    REMOTE_CONTROL_RETRY_MS[
+      Math.min(state.failures, REMOTE_CONTROL_RETRY_MS.length - 1)
+    ];
+  state.failures += 1;
+  state.retry = setTimeout(() => {
+    void enableRemoteControl(live);
+  }, delay);
+}
+
+function noteRemoteControlStatus(
+  live: Live,
+  rec: Record<string, unknown> | null,
+): void {
+  const state = live.remoteControl;
+  if (!state) return;
+  const status = stringField(rec, "status");
+  if (!status || status === state.status) return;
+  state.status = status;
+  if (status === "connected") {
+    state.failures = 0;
+    const url = stringField(rec, "url") ?? stringField(rec, "sessionUrl");
+    live.onEvent({
+      type: "status",
+      text: url ? `Remote Control on: ${url}` : "Remote Control on.",
+    });
+    return;
+  }
+  if (status === "errored") {
+    const reason =
+      stringField(rec, "message") ??
+      stringField(rec, "error") ??
+      stringField(asRecord(rec?.error), "message");
+    live.onEvent({
+      type: "status",
+      text: reason
+        ? `Remote Control dropped: ${reason}. Retrying.`
+        : "Remote Control dropped. Retrying.",
+    });
+    scheduleRemoteControlRetry(live);
   }
 }
 
@@ -728,6 +824,11 @@ function handleNotification(
   method: string,
   params: unknown,
 ): void | Promise<void> {
+  // The bridge reports while a resumed thread is still muted; never drop it.
+  if (method === "remoteControl/status/changed") {
+    noteRemoteControlStatus(live, asRecord(params));
+    return;
+  }
   if (live.muteUpdates || live.cancelled) return;
   const rec = asRecord(params);
   if (method === "serverRequest/resolved") {

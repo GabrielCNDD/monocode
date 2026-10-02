@@ -1,4 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const remoteControlFlags = vi.hoisted(() => ({ claude: false, codex: false }));
+
+vi.mock("../../../features/settings/model/remoteControl", () => ({
+  isRemoteControlHarness: (harness: string) =>
+    harness === "claude" || harness === "codex",
+  loadRemoteControl: (harness: "claude" | "codex") =>
+    remoteControlFlags[harness],
+}));
 import {
   resetHarnessModelOverlays,
   setHarnessModels,
@@ -294,6 +303,29 @@ describe("harness registry", () => {
     expect(stopSession).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(stopSession).toHaveBeenCalledWith("s1");
+  });
+
+  it("keeps a Remote Control session running instead of parking it", async () => {
+    vi.useFakeTimers();
+    remoteControlFlags.claude = true;
+    const stopSession = vi.fn(async () => undefined);
+    registerHarness(stub("claude", { stopSession }));
+    try {
+      await sendHarnessTurn({
+        harness: "claude",
+        sessionId: "s1",
+        cwd: "/tmp",
+        model: "claude:claude-sonnet-5",
+        text: "hi",
+        runtimeMode: "supervised",
+        onEvent: () => undefined,
+      });
+
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS * 2);
+      expect(stopSession).not.toHaveBeenCalled();
+    } finally {
+      remoteControlFlags.claude = false;
+    }
   });
   it("serializes provider-state operations per session", async () => {
     const order: string[] = [];

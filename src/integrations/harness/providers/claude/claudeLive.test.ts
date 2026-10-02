@@ -16,6 +16,13 @@ const writeChild = vi.fn(async (_id: string, line: string) => {
   sent.push(line);
 });
 
+const remoteControlFlags = vi.hoisted(() => ({ claude: false, codex: false }));
+
+vi.mock("../../../../features/settings/model/remoteControl", () => ({
+  loadRemoteControl: (harness: "claude" | "codex") =>
+    remoteControlFlags[harness],
+}));
+
 vi.mock("../../core/child", () => ({
   resolveClaudeBinary: async () => ({ path: "/fake/claude" }),
   spawnChild: async (_id: string, _path: string, args: string[]) => {
@@ -1973,5 +1980,82 @@ describe("claude manual compaction", () => {
       text: "Compacted context",
     });
     expect(events.some((event) => event.type === "message.delta")).toBe(false);
+  });
+});
+
+describe("claude remote control", () => {
+  beforeEach(() => {
+    sent.length = 0;
+    spawned.length = 0;
+    remoteControlFlags.claude = true;
+  });
+
+  afterEach(async () => {
+    remoteControlFlags.claude = false;
+    await stopClaudeSession("claude-rc");
+    __claudeTestReset();
+  });
+
+  function remoteControlRequest() {
+    return parse().find((m) => {
+      const request = m.request as Record<string, unknown> | undefined;
+      return request?.subtype === "remote_control";
+    });
+  }
+
+  it("asks Claude to join Remote Control once the session is up", async () => {
+    const { events } = await startTurn("claude-rc");
+    const request = remoteControlRequest();
+    expect(request?.type).toBe("control_request");
+    expect(request?.request).toEqual({
+      subtype: "remote_control",
+      enabled: true,
+    });
+
+    emit({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: request!.request_id,
+        response: { session_url: "https://claude.ai/code/session/abc" },
+      },
+    });
+    await waitFor(
+      () =>
+        events.some(
+          (event) =>
+            event.type === "status" &&
+            event.text === "Remote Control on: https://claude.ai/code/session/abc",
+        ),
+      "remote control status",
+    );
+  });
+
+  it("reports when Claude refuses Remote Control", async () => {
+    const { events } = await startTurn("claude-rc");
+    const request = remoteControlRequest();
+    emit({
+      type: "control_response",
+      response: {
+        subtype: "error",
+        request_id: request!.request_id,
+        error: "not logged in",
+      },
+    });
+    await waitFor(
+      () =>
+        events.some(
+          (event) =>
+            event.type === "status" &&
+            event.text === "Remote Control could not start: not logged in",
+        ),
+      "remote control error",
+    );
+  });
+
+  it("leaves Remote Control alone while the setting is off", async () => {
+    remoteControlFlags.claude = false;
+    await startTurn("claude-rc");
+    expect(remoteControlRequest()).toBeUndefined();
   });
 });

@@ -6,6 +6,7 @@ import type {
   TaskListMeta,
 } from "../../../../features/sessions/model/session";
 import { loadClaudeHooks } from "../../../../features/settings/model/settings";
+import { loadRemoteControl } from "../../../../features/settings/model/remoteControl";
 import {
   killChild,
   resolveClaudeBinary,
@@ -43,6 +44,7 @@ import {
   parseBackgroundTasks,
   parseControlCancelId,
   parseControlRequest,
+  parseControlResponse,
   parseJsonLine,
   parseTaskNotification,
   parseTaskProgress,
@@ -138,6 +140,8 @@ type Live = {
   visibleQuestionId: number | null;
   nextApprovalUiId: number;
   nextControlId: number;
+  /** Id of the Remote Control request still waiting for Claude's answer. */
+  remoteControlId: string | null;
   toolsByIndex: Map<number, InFlightTool>;
   toolsById: Map<string, InFlightTool>;
   agentTasks: Map<string, LiveAgentTask>;
@@ -486,6 +490,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     visibleQuestionId: null,
     nextApprovalUiId: 1,
     nextControlId: 1,
+    remoteControlId: null,
     toolsByIndex: new Map(),
     toolsById: new Map(),
     agentTasks: new Map(),
@@ -564,6 +569,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       providerSessionId: live.claudeSessionId,
     });
     live.onEvent({ type: "session.started" });
+    await requestRemoteControl(input.sessionId, live);
     return live;
   } catch (error) {
     await stopClaudeSession(input.sessionId);
@@ -693,6 +699,7 @@ function handleLine(sessionId: string, live: Live, line: string): void {
 
   if (type === "control_response") {
     markInitialized(live);
+    noteRemoteControlResponse(live, rec);
     return;
   }
 
@@ -1744,6 +1751,49 @@ function waitForInit(live: Live, timeoutMs: number): Promise<void> {
       clearTimeout(timer);
       resolve();
     };
+  });
+}
+
+/**
+ * Ask Claude to connect this process to Remote Control, when the setting is
+ * on. Claude answers with the session URL once the bridge is up; the answer
+ * is reported through `noteRemoteControlResponse`.
+ */
+async function requestRemoteControl(
+  sessionId: string,
+  live: Live,
+): Promise<void> {
+  if (!loadRemoteControl("claude")) return;
+  const requestId = nextControlId(live);
+  live.remoteControlId = requestId;
+  await writeJson(
+    sessionId,
+    buildControlRequest(requestId, {
+      subtype: "remote_control",
+      enabled: true,
+    }),
+  );
+}
+
+function noteRemoteControlResponse(
+  live: Live,
+  rec: Record<string, unknown>,
+): void {
+  if (!live.remoteControlId) return;
+  const response = parseControlResponse(rec);
+  if (!response || response.requestId !== live.remoteControlId) return;
+  live.remoteControlId = null;
+  if (!response.ok) {
+    live.onEvent({
+      type: "status",
+      text: `Remote Control could not start: ${response.error}`,
+    });
+    return;
+  }
+  const url = stringField(response.payload, "session_url");
+  live.onEvent({
+    type: "status",
+    text: url ? `Remote Control on: ${url}` : "Remote Control on.",
   });
 }
 
