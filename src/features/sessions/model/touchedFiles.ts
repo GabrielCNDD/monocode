@@ -4,6 +4,7 @@ import {
   resolveWorkspaceFileReference,
   resolveWorkspacePath,
   slash,
+  windowsPath,
 } from "../../../shared/lib/paths";
 import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 import type { Block } from "./session";
@@ -51,6 +52,11 @@ export function resolveSessionFileReference(
   }
   // Touched paths are absolute, so one that ends with the reference is that file.
   const tail = `/${displayPath(file.path, cwd)}`;
-  const matches = touchedPaths.filter((path) => slash(path).endsWith(tail));
+  // Windows paths compare without case, as `pathKey` does.
+  const matches = touchedPaths.filter((path) =>
+    windowsPath(path)
+      ? pathKey(path).endsWith(tail.toLowerCase())
+      : slash(path).endsWith(tail),
+  );
   return matches.length === 1 ? { ...file, path: matches[0] } : file;
 }

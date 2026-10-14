@@ -94,6 +94,16 @@ describe("resolveSessionFileReference", () => {
     ).toEqual({ path: "/Users/me/sales/NOTES.md" });
   });
 
+  it("ignores case only on Windows paths", () => {
+    const windows = "C:/Users/me/agents/sales/notes/NOTES.md";
+    expect(
+      resolveSessionFileReference("notes.md", "C:/Users/me", [windows]),
+    ).toEqual({ path: windows });
+    expect(resolveSessionFileReference("notes.md", cwd, [NOTES])).toEqual({
+      path: "/Users/me/notes.md",
+    });
+  });
+
   it("matches whole path segments only", () => {
     expect(resolveSessionFileReference("OTES.md", cwd, [NOTES])).toEqual({
       path: "/Users/me/OTES.md",
